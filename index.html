@@ -150,6 +150,7 @@
   }
   .badge.prima{background:rgba(196,103,122,0.25);color:#F0C6D0;}
   .badge.koshy{background:rgba(107,140,180,0.25);color:#C9DCF0;}
+  .badge.finale{background:rgba(203,154,69,0.25);color:#F3DFB3;}
   .center{text-align:center;}
   .muted{color:#CBB6C7;font-size:14px;line-height:1.5;}
   .q-text{font-size:20px;line-height:1.35;margin-bottom:18px;}
@@ -193,6 +194,20 @@
   .stage-row{display:flex;align-items:flex-end;justify-content:center;gap:8px;flex-wrap:wrap;position:relative;min-height:170px;}
   .stage-side{display:flex;align-items:flex-end;gap:6px;flex-wrap:wrap;justify-content:center;max-width:38%;}
   .center-pair{position:relative;display:flex;align-items:flex-end;gap:0px;margin:0 8px;}
+
+  .winner-stage{overflow:hidden;position:relative;}
+  .winner-title{
+    text-align:center;font-family:'Fraunces',serif;font-size:20px;font-weight:700;color:var(--gold);
+    margin-bottom:18px;position:relative;z-index:2;
+  }
+  .confetti-piece{
+    position:absolute;top:-12px;width:8px;height:14px;opacity:.9;border-radius:2px;
+    animation:confettiFall 2.6s linear infinite;z-index:1;
+  }
+  @keyframes confettiFall{
+    0%{transform:translateY(0) rotate(0deg);opacity:1;}
+    100%{transform:translateY(260px) rotate(360deg);opacity:0;}
+  }
 
   .figure{display:flex;flex-direction:column;align-items:center;width:80px;position:relative;opacity:0;}
   .figure.owner-figure{width:80px;}
@@ -456,7 +471,7 @@ function defaultControl(){
   var scores={};
   NAMES.forEach(function(n){ if(n!=='MASTER') scores[n]=0; });
   return { round:null, screen:'lobby', questionId:null, questionStartTime:null,
-           usedQuestions:{prima:[], koshy:[]}, scores:scores, lastResults:null };
+           usedQuestions:{prima:[], koshy:[], finale:[]}, scores:scores, lastResults:null };
 }
 
 function ensureControl(){ if(!control) control = defaultControl(); return control; }
@@ -487,7 +502,8 @@ function normalizeControl(v){
     questionStartTime: c.questionStartTime !== undefined ? c.questionStartTime : d.questionStartTime,
     usedQuestions: {
       prima: (c.usedQuestions && c.usedQuestions.prima) || [],
-      koshy: (c.usedQuestions && c.usedQuestions.koshy) || []
+      koshy: (c.usedQuestions && c.usedQuestions.koshy) || [],
+      finale: (c.usedQuestions && c.usedQuestions.finale) || []
     },
     scores: Object.assign({}, d.scores, c.scores || {}),
     lastResults: normLR
@@ -513,12 +529,28 @@ function attachControlListener(){
   });
 }
 
-function roundOwner(){ return control.round==='prima' ? 'PRIMA' : (control.round==='koshy' ? 'KOSHY' : null); }
-function roundRole(){ return control.round==='prima' ? 'Prima' : 'Koshy'; }
-function currentQuestion(){ return QUESTIONS.find(function(q){ return q.id===control.questionId; }); }
+// The finale is a single fixed True/False statement, kept OUT of the regular
+// QUESTIONS pool so it never shows up in Prima's or Koshy's normal question
+// picker -- it only ever runs as the one-off bonus round at the very end.
+// TODO: replace this prompt with the real statement before the party --
+// this is a placeholder.
+var FINALE_QUESTION = {
+  id: 'finaleTF',
+  prompt: "TRUE OR FALSE: [Placeholder \u2014 Prima to supply the real statement]",
+  options: ['True','False']
+};
+function findQuestion(qid){
+  if(FINALE_QUESTION && qid===FINALE_QUESTION.id) return FINALE_QUESTION;
+  return QUESTIONS.find(function(q){ return q.id===qid; });
+}
+
+function roundOwner(){ return control.round==='prima' ? 'PRIMA' : (control.round==='koshy' ? 'KOSHY' : (control.round==='finale' ? 'PRIMA' : null)); }
+function roundLabel(){ return control.round==='prima' ? 'Prima Round \u00b7 Bride' : (control.round==='koshy' ? 'Koshy Round \u00b7 Groom' : '\ud83c\udfc1 Final Round \u00b7 True or False'); }
+function roundRole(){ return control.round==='koshy' ? 'Koshy' : 'Prima'; }
+function currentQuestion(){ return control.round==='finale' ? FINALE_QUESTION : QUESTIONS.find(function(q){ return q.id===control.questionId; }); }
 function qPrompt(q){ return q.prompt.split('{ROLE}').join(roundRole()); }
 function qPromptFor(q, round){
-  var role = round==='prima' ? 'Prima' : 'Koshy';
+  var role = round==='koshy' ? 'Koshy' : 'Prima';
   return q.prompt.split('{ROLE}').join(role);
 }
 
@@ -537,8 +569,44 @@ async function submitKey(qid, idx){
 
 async function masterPickRound(round){
   ensureControl();
-  control.round = round; control.screen='picking'; control.questionId=null; control.lastResults=null;
+  control.round = round; control.lastResults=null;
+  if(round==='finale'){
+    // Only one fixed question for the finale -- skip the picker, go straight in.
+    control.questionId = FINALE_QUESTION.id;
+    control.questionStartTime = Date.now();
+    control.screen = 'question';
+    finalizing = false;
+    render(); // instant local feedback, same fix as the old "Reveal now" bug
+    await saveControl();
+    attachAnswersListener('finale', FINALE_QUESTION.id);
+  } else {
+    control.screen='picking'; control.questionId=null;
+    render();
+    await saveControl();
+  }
+}
+
+function computeWinner(){
+  var best=null, bestScore=-1;
+  NAMES.forEach(function(n){
+    if(n==='MASTER') return;
+    var s = control.scores[n]||0;
+    if(s>bestScore){ bestScore=s; best=n; }
+  });
+  return { name: best, score: bestScore };
+}
+async function masterCrownWinner(){
+  ensureControl();
+  control.screen = 'winner';
+  render();
   await saveControl();
+}
+async function masterBackToLobby(){
+  ensureControl();
+  control.round=null; control.screen='lobby'; control.questionId=null; control.lastResults=null;
+  render();
+  await saveControl();
+  detachAnswersListener();
 }
 async function masterChangeRound(){
   ensureControl();
@@ -611,7 +679,7 @@ async function finalize(force){
       else { wrongList.push(n); }
     });
     if(round && control.usedQuestions[round].indexOf(qid)===-1){ control.usedQuestions[round].push(qid); }
-    var q = QUESTIONS.find(function(qq){return qq.id===qid;});
+    var q = findQuestion(qid);
     // The partner's guess (Koshy's guess in Prima's round, Prima's guess in Koshy's round)
     // gets called out on its own — it's the one everyone really wants to see.
     var partnerName = round==='prima' ? 'KOSHY' : (round==='koshy' ? 'PRIMA' : null);
@@ -703,13 +771,14 @@ function renderMaster(){
     var mainHtml = '<div class="card"><h3 style="font-size:17px;margin-bottom:14px;">Choose a round</h3>'+
       '<button class="btn rose" onclick="window.__masterPickRound(\'prima\')">💗 Prima Round (Bride)</button>'+
       '<button class="btn secondary" style="border-color:#7FA0C7;" onclick="window.__masterPickRound(\'koshy\')">💙 Koshy Round (Groom)</button>'+
+      '<button class="btn secondary" style="border-color:var(--gold);margin-top:8px;" onclick="window.__masterPickRound(\'finale\')">🏁 Final Round (True or False)</button>'+
     '</div>';
     root.innerHTML = head + '<div class="master-grid"><div class="master-main">'+mainHtml+'</div><div class="master-side">'+renderLeaderboardCard(null)+'</div></div>';
     return;
   }
 
   var owner = roundOwner();
-  var pill = '<div class="pill-row"><span class="badge '+control.round+'">'+ (control.round==='prima'?'Prima Round · Bride':'Koshy Round · Groom') +'</span></div>';
+  var pill = '<div class="pill-row"><span class="badge '+control.round+'">'+ roundLabel() +'</span></div>';
 
   if(control.screen==='picking'){
     var used = control.usedQuestions[control.round] || [];
@@ -750,7 +819,7 @@ function renderMaster(){
 
   if(control.screen==='results'){
     var r = control.lastResults;
-    var q2 = QUESTIONS.find(function(qq){return qq.id===r.qid;});
+    var q2 = findQuestion(r.qid);
     maybePlayCutscene(r);
     var mainHtml = pill + qBox(qPromptFor(q2, control.round)) +
       renderCelebration(r) +
@@ -760,12 +829,43 @@ function renderMaster(){
       renderResultLists(r)+
     '</div>';
     mainHtml += '<div class="card">'+
-      '<button class="btn" onclick="window.__masterNextQuestion()">Next question</button>'+
+      (control.round==='finale'
+        ? '<button class="btn rose" onclick="window.__masterCrownWinner()">🏆 Crown the Winner</button>'
+        : '<button class="btn" onclick="window.__masterNextQuestion()">Next question</button>')+
       '<button class="btn secondary" onclick="window.__masterChangeRound()">Switch round</button>'+
     '</div>';
     root.innerHTML = head + '<div class="master-grid"><div class="master-main">'+mainHtml+'</div><div class="master-side">'+renderLeaderboardCard(owner)+'</div></div>';
     return;
   }
+
+  if(control.screen==='winner'){
+    var winner = computeWinner();
+    var mainHtml2 = '<div class="card"><h3 style="font-size:17px;margin-bottom:4px;text-align:center;">🎉 And the winner is...</h3></div>'+
+      renderWinnerStage(winner)+
+      '<div class="card">'+
+      '<button class="btn" onclick="window.__masterBackToLobby()">Back to lobby</button>'+
+      '</div>';
+    root.innerHTML = head + '<div class="master-grid"><div class="master-main">'+mainHtml2+'</div><div class="master-side">'+renderLeaderboardCard(null)+'</div></div>';
+    return;
+  }
+}
+
+function renderWinnerStage(winner){
+  var confetti = '';
+  var colors = ['#CB9A45','#C4677A','#7FA0C7','#8FBF8A','#F0C67A'];
+  for(var i=0;i<18;i++){
+    var left = Math.round(Math.random()*100);
+    var delay = (Math.random()*1.2).toFixed(2);
+    var color = colors[i % colors.length];
+    confetti += '<div class="confetti-piece" style="left:'+left+'%;animation-delay:'+delay+'s;background:'+color+';"></div>';
+  }
+  return '<div class="celebration-stage winner-stage">'+
+    confetti+
+    '<div class="winner-title">🏆 '+(winner.name||'—')+' wins with '+winner.score+' point'+(winner.score===1?'':'s')+'!</div>'+
+    '<div class="stage-row" style="min-height:230px;">'+
+      '<div class="center-pair">'+figureHTML(winner.name, 'owner-figure owner-solo')+'</div>'+
+    '</div>'+
+  '</div>';
 }
 
 function renderResultLists(r){
@@ -895,6 +995,8 @@ window.__masterChangeRound = masterChangeRound;
 window.__masterPickQuestion = masterPickQuestion;
 window.__masterNextQuestion = masterNextQuestion;
 window.__masterForceReveal = function(){ finalizing=false; finalize(true); };
+window.__masterCrownWinner = masterCrownWinner;
+window.__masterBackToLobby = masterBackToLobby;
 
 // ---------- PLAYER VIEW ----------
 
@@ -912,7 +1014,7 @@ function renderPlayer(){
   var owner = roundOwner();
 
   if(control.screen==='picking'){
-    html += '<div class="pill-row"><span class="badge '+control.round+'">'+(control.round==='prima'?'Prima Round · Bride':'Koshy Round · Groom')+'</span></div>';
+    html += '<div class="pill-row"><span class="badge '+control.round+'">'+roundLabel()+'</span></div>';
     html += '<div class="card center"><div class="muted">Master is picking the next question. Get ready!</div></div>';
     html += switchUserLink();
     root.innerHTML = html; return;
@@ -922,7 +1024,7 @@ function renderPlayer(){
     var q = currentQuestion();
     var alreadyAnswered = localAnsweredQid===q.id;
     var isOwner = myIdentity===owner;
-    html += '<div class="pill-row"><span class="badge '+control.round+'">'+(control.round==='prima'?'Prima Round · Bride':'Koshy Round · Groom')+'</span></div>';
+    html += '<div class="pill-row"><span class="badge '+control.round+'">'+roundLabel()+'</span></div>';
     html += qBox(qPrompt(q));
     html += '<div class="card">';
     if(isOwner){
@@ -950,10 +1052,10 @@ function renderPlayer(){
 
   if(control.screen==='results'){
     var r = control.lastResults;
-    var q2 = QUESTIONS.find(function(qq){return qq.id===r.qid;});
+    var q2 = findQuestion(r.qid);
     var isOwner2 = myIdentity===owner;
     localAnsweredQid = null; // reset so the next question shows fresh options
-    html += '<div class="pill-row"><span class="badge '+control.round+'">'+(control.round==='prima'?'Prima Round · Bride':'Koshy Round · Groom')+'</span></div>';
+    html += '<div class="pill-row"><span class="badge '+control.round+'">'+roundLabel()+'</span></div>';
     html += qBox(qPromptFor(q2, control.round));
     html += '<div class="card">'+
       '<div class="badge '+control.round+'" style="margin-bottom:12px;">'+owner+"'s real answer: "+ (r.keyText || 'Not submitted') +'</div>'+
@@ -967,6 +1069,13 @@ function renderPlayer(){
     '</div>';
     html += renderLeaderboardCard(owner);
     html += '<div class="card center"><div class="muted">Waiting for the Master to start the next question…</div></div>';
+    root.innerHTML = html; return;
+  }
+
+  if(control.screen==='winner'){
+    var winner2 = computeWinner();
+    html += renderWinnerStage(winner2);
+    html += '<div class="card center"><div class="muted">Thanks for playing! 🎉</div></div>';
     root.innerHTML = html; return;
   }
 }
